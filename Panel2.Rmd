@@ -1,0 +1,260 @@
+---
+title: "Panel Data Result"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(dplyr)
+library(kableExtra)
+knitr::opts_chunk$set(echo = TRUE)
+options(knitr.table.format = "html")
+```
+```{r include=FALSE}
+list.of.packages <- c("sos", "dplyr", "magrittr", "readr", "writexl", "gdata", "car", 
+                      "mctest", "leaps", "plm", "stargazer", "lfe", "modeltools", 
+                      "rpart", "superml", "caret", "tree", "MASS", "tidyverse", "e1071", 
+                      "mda", "randomForest", "klaR", "devtools", "ggplot2", "pROC", 
+                      "neuralnet", "gmodels", "xlsx", "dominanceanalysis", "nnet", 
+                      "clusterGeneration", "reshape", "lubridate", "glmnet", 
+                      "kableExtra", "Hmisc", "olsrr")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+lapply(list.of.packages, require, character.only = TRUE)
+```
+
+# 讀取與整理資料
+
+原始檔案中有45項變數：
+```{r}
+rawdata = read_csv("/Users/AnthonyLee/Documents/Class/1081/Industry Economics/Finals/Panel_Data.csv")
+colnames(rawdata)
+```
+但其中有許多與其他項目有重複、可以藉由其他項目得出，或是有缺失值存在，因此將其中28項刪除，而其中加權平均股數有一缺失值，經研究後發現與上期股數、股本等皆不變，研究財報後，也並未發現有新發行任何可稀釋股權之金融工具，故將此缺失值以上期數字補上。另外，為之後於線性模型表示式表達方便性，將剩餘欄位皆其命名為英文，資料項目剩餘以下17個：
+```{r}
+drop = c("TEJ子產業名", 
+         "實收資本額(NTD)", "期末帳面值(NTD)", "累計台灣匯出總額(NTD)", "經濟部核准金額(NTD)", 
+         "應計退休金負債", "法定盈餘公積", "保留盈餘", "母公司股東權益合計", "股東權益總額", 
+         "所得稅費用", "繼續營業單位損益", "合併總損益", "本期綜合損益總額", 
+         "歸屬母公司淨利（損）", "綜合損益歸屬母公司", 
+         "稀釋稅後淨利", "加權平均股數－稀釋", 
+         "稅前息前淨利", "稅前息前折舊前淨利", "期末普通股－現金股利", 
+         "稅前淨利－CFO", "折舊－CFO", "攤提－CFO", "期初現金及約當現金", "期末現金及約當現金", 
+         "X1", "本期匯出金額(NTD)", "常續性稅後淨利", "其他應付款", "當期所得稅負債", 
+         "營業收入淨額", "營業費用", "稅前淨利", "加權平均股數", "實收資本額(元)")
+cleandata = rawdata[, !(names(rawdata) %in% drop)]
+cleandata = cleandata[complete.cases(cleandata), ]
+cleandata$年月 = year(cleandata$年月)
+names(cleandata) = c("id", "year", "Industry", 
+                     "Cash", "PPnE", "Stock", "RetainedEarnings", "CFfromOperating", 
+                     "InvestChina")
+cat("欄位na值：\n")
+colSums(is.na(cleandata))
+cat("\n欄位中文名：\n")
+colnames(rawdata[, !(names(rawdata) %in% drop)])
+cat("\n欄位英文名：\n")
+colnames(cleandata)
+```
+
+將公司id及產業名稱轉為類別變數：
+```{r}
+cleandata$id = as.factor(cleandata$id)
+cleandata$Industry = as.factor(cleandata$Industry)
+```
+將資料進行排序後，轉換成panel data type：
+```{r}
+cleandata.sort = cleandata[order(cleandata$id, cleandata$year),]
+pdata = pdata.frame(cleandata.sort, index = c("id", "year"))
+```
+看前六筆資料：
+```{r}
+head(pdata)
+```
+
+# Test for lagged panel data
+接下來，將對大陸投資金額lag一期去跑模型。
+
+## -lag data
+將資料lag一期並刪除空值：
+```{r}
+pdata.lag = pdata
+pdata.lag$InvestChina = lag(pdata.lag$InvestChina)
+pdata.lag = pdata.lag[complete.cases(pdata.lag), ]
+cat("欄位na值：\n")
+colSums(is.na(pdata.lag))
+```
+### Pooled OLS for lag data
+**先使用pooled method來預估變數係數，並觀察膨脹係數(VIF)：**
+```{r}
+pooling.lag = plm(InvestChina ~ Industry + 
+                    Cash + PPnE + Stock + RetainedEarnings, 
+                  data = pdata.lag, model = "pooling")
+summary(pooling.lag)
+vif(pooling.lag)
+```
+發現R square比沒有lag時低了一些，變成0.57993。
+### Fixed-effect for lag data
+**使用Fixed-effect來預估模型變數係數：**
+```{r}
+fixed.lag.1a = plm(InvestChina ~ Industry + 
+                    Cash + PPnE + Stock + RetainedEarnings, 
+                data = pdata.lag, model = "within")
+summary(fixed.lag.1a)
+fixed.lag.1b = plm(InvestChina ~ Industry + 
+                    Cash + PPnE + Stock + RetainedEarnings, 
+                data = pdata.lag, model = "within", effect = "twoways")
+summary(fixed.lag.1b)
+```
+this can be done after plm with the function fixef
+```{r eval=FALSE, include=FALSE}
+fixed.lag.1c = lm(InvestChina ~ factor(id)-1 + Industry + 
+                    Cash + PPnE + Stock + RetainedEarnings, 
+                 data = pdata.lag)
+stargazer(fixed.lag.1a, fixed.lag.1c,title="Company FEs", type="text", df=FALSE, digits=4)
+# fixef(fixed.lag.1a,effect="individual")
+# fixef(fixed.lag.1b,effect="individual")
+# fixef(fixed.lag.1b,effect = "time")
+```
+
+```{r include=FALSE}
+sumforfixed = summary(fixed.lag)
+write.csv(as.data.frame(sumforfixed$coefficients),  
+          file = "~/Documents/Class/1081/Industry Economics/Finals/coefficients.csv")
+```
+### Random-effect for lag data
+**使用Random-effect來預估模型變數係數：**
+```{r eval=FALSE}
+random.lag = plm(InvestChina ~ Industry + 
+                    Cash + PPnE + Stock + RetainedEarnings, 
+                 data = pdata.lag, model = "random")
+summary(random.lag)
+```
+`Error in solve.default(crossprod(ZBeta)) : system is computationally singular: reciprocal condition number = 4.41093e-20`
+很不幸的，我們得到了以上的錯誤訊息，在經過查詢許多資料後，發現以上的問題可能是因為於共線性過高或變數比觀察值多的緣故，但在刪除所有膨脹係數高於2.5的變數之後，發現仍然存在以上錯誤，無法跑出random-effect model。
+
+### LM Test for lag data
+**因此，在跑不出random-effect model的情況下，決定直接做Lagrange Multiplier Test來測試是否使用fixed-effect或random-effect estimator會比使用pooled OLS estimator好：**
+```{r}
+## LM test for random-effects versus OLS
+plmtest(pooling.lag)
+## LM test for fixed-effects versus OLS
+pFtest(fixed.lag, pooling.lag)
+```
+可以發現第一個測試顯示random-effect顯著，表示誤差項確實存在time-series effects；而第二個測試也顯示fixed-effect顯著，表示確實在個體間存在著individual effects。然而，因為無法產出random-effect estimators的緣故，我們無法推斷究竟random-effect與fixed-effect何種較具有一致性(Consistency)，因此保守選擇fixed-effect estimators。
+
+## 決策數(Decision Tree)
+```{r}
+dataForSelect = as.data.frame(pdata.lag)[, -c(1, 2)]
+dataForSelect$InvestChina = as.numeric(cut2(dataForSelect$InvestChina, g = 3))
+
+for (j in c(1:nrow(dataForSelect))) {
+  if(dataForSelect$InvestChina[j] == 1){
+    dataForSelect$InvestChina[j] = "Low"
+  }else if(dataForSelect$InvestChina[j] == 2){
+    dataForSelect$InvestChina[j] = "Mid"
+  }else{
+    dataForSelect$InvestChina[j] = "High"
+  }
+}
+dataForSelect$InvestChina = as.factor(dataForSelect$InvestChina)
+
+invest_low.select = dataForSelect[which(dataForSelect$InvestChina == "Low"), ]  # all Low's
+invest_mid.select = dataForSelect[which(dataForSelect$InvestChina == "Mid"), ]  # all Mid's
+invest_high.select = dataForSelect[which(dataForSelect$InvestChina == "High"), ]  # all High's
+set.seed(887)
+samplelow.select = sample(1:nrow(invest_low.select), 0.8*nrow(invest_low.select))
+samplemid.select = sample(1:nrow(invest_mid.select), 0.8*nrow(invest_mid.select))
+samplehigh.select = sample(1:nrow(invest_high.select), 0.8*nrow(invest_high.select))
+
+training_low.select = invest_low.select[samplelow.select, ]  
+training_mid.select = invest_mid.select[samplemid.select, ]
+training_high.select = invest_high.select[samplehigh.select, ]
+trainingSets.select = bind_rows(training_low.select, training_mid.select, training_high.select)
+
+# Create Test Data
+test_low.select = invest_low.select[-samplelow.select, ]
+test_mid.select = invest_mid.select[-samplemid.select, ]
+test_high.select = invest_high.select[-samplehigh.select, ]
+testingSets.select = bind_rows(test_low.select, test_mid.select, test_high.select)
+```
+
+### run decision tree
+```{r}
+##try to run an optimal decisiontree classifier
+DT_clf.select = rpart(trainingSets.select$InvestChina ~ Industry + 
+                    Cash + PPnE + Stock + RetainedEarnings, 
+                    data = trainingSets.select, method = "class", 
+                    control = rpart.control(minsplit=30, cp=0.001))
+cp.select = DT_clf.select$cptable[which.min(DT_clf.select$cptable[,"xerror"]), "CP"]
+PDT_clf.select = prune(DT_clf.select, cp = cp.select)
+PDT_clf.select$variable.importance
+```
+### Tree Structure
+```{r}
+#DT_clf.select$cptable
+#summary(PDT_clf.select)
+plot(PDT_clf.select, uniform=TRUE, main="Pruned Classification Tree for CreditCard")
+text(PDT_clf.select, use.n=TRUE, all=TRUE, cex=.4)
+par(family="微軟正黑體")
+dev.copy(png,filename="~/Documents/Class/1081/Industry Economics/Finals/PDTSelectplot.png", width=4, height=3, units="in",res=500);
+dev.off ()
+```
+### Training Data Precision
+```{r}
+PDT.train.pred.select = predict(PDT_clf.select, newdata = trainingSets.select, type = 'class')
+PDT.table.train.select = table(trainingSets.select$InvestChina, PDT.train.pred.select)
+PDT.correct.train.select = sum(diag(PDT.table.train.select))/sum(PDT.table.train.select)
+cat("訓練資料總預測準確度：\n")
+PDT.correct.train.select
+cat("\n混淆矩陣：\n")
+confusion(PDT.train.pred.select, trainingSets.select$InvestChina)
+```
+### Testing Data Precision
+```{r}
+PDT.test.pred.select = predict(PDT_clf.select, newdata = testingSets.select, type = 'class')
+PDT.table.test.select = table(testingSets.select$InvestChina, PDT.test.pred.select)
+PDT.correct.test.select = sum(diag(PDT.table.test.select))/sum(PDT.table.test.select)
+cat("測試資料總預測準確度：\n")
+PDT.correct.test.select
+cat("\n混淆矩陣：\n")
+confusion(PDT.test.pred.select, testingSets.select$InvestChina)
+```
+
+```{r}
+attach(mtcars)
+plot(as.vector(pdata.lag$Cash), as.vector(pdata.lag$InvestChina), main="Scatterplot",
+   xlab="Cash ", ylab="InvestChina ", pch=19)
+dev.copy(png,filename="~/Documents/Class/1081/Industry Economics/Finals/CashScatter.png", width=4, height=3, units="in",res=500);
+dev.off ()
+```
+
+```{r}
+attach(mtcars)
+plot(as.vector(pdata.lag$PPnE), as.vector(pdata.lag$InvestChina), main="Scatterplot",
+   xlab="PP&E ", ylab="InvestChina ", pch=19)
+dev.copy(png,filename="~/Documents/Class/1081/Industry Economics/Finals/PPnEScatter.png", width=4, height=3, units="in",res=500);
+dev.off ()
+```
+
+```{r}
+attach(mtcars)
+plot(as.vector(pdata.lag$Stock), as.vector(pdata.lag$InvestChina), main="Scatterplot",
+   xlab="Stock", ylab="InvestChina ", pch=19)
+dev.copy(png,filename="~/Documents/Class/1081/Industry Economics/Finals/StockScatter.png", width=4, height=3, units="in",res=500);
+dev.off ()
+```
+
+```{r}
+attach(mtcars)
+plot(as.vector(pdata.lag$RetainedEarnings), as.vector(pdata.lag$InvestChina), main="Scatterplot",
+   xlab="RetainedEarnings", ylab="InvestChina ", pch=19)
+dev.copy(png,filename="~/Documents/Class/1081/Industry Economics/Finals/RetainedEarningsScatter.png", width=4, height=3, units="in",res=500);
+dev.off ()
+```
+
